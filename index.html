@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mandelbrot Mouse Explorer (Single File)</title>
+    <style>
+      :root {
+        font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+        color: #e7ecff;
+        background: #000b2f;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: radial-gradient(circle at top, #001856 0%, #000628 65%);
+      }
+      main {
+        max-width: 1280px;
+        margin: 0 auto;
+        padding: 16px;
+        display: grid;
+        grid-template-columns: 360px 1fr;
+        gap: 16px;
+      }
+      .panel,
+      .plot-wrap {
+        background: rgba(2, 14, 53, 0.9);
+        border: 1px solid rgba(119, 153, 255, 0.45);
+        border-radius: 12px;
+      }
+      .panel { padding: 16px; }
+      .plot-wrap { padding: 14px; }
+      h1 {
+        margin-top: 0;
+        margin-bottom: 16px;
+        font-size: 40px;
+        line-height: 1.05;
+      }
+      h2 {
+        margin: 10px 0;
+        font-size: 25px;
+      }
+      p {
+        font-size: 18px;
+        line-height: 1.35;
+      }
+      .stats p { margin: 6px 0; }
+      #result.in-set { color: #62ff95; }
+      #result.not-in-set { color: #ff6b6b; }
+      #mandelbrot {
+        width: 100%;
+        height: auto;
+        display: block;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        cursor: crosshair;
+      }
+      .orbit-meta {
+        margin-top: 12px;
+        font-size: 14px;
+        color: #c7d3ff;
+      }
+      details {
+        margin-top: 14px;
+        border: 1px solid rgba(122, 153, 255, 0.35);
+        border-radius: 8px;
+        padding: 8px;
+        background: rgba(1, 9, 35, 0.4);
+      }
+      details > summary {
+        cursor: pointer;
+        font-weight: 700;
+      }
+      #orbit-list {
+        margin: 8px 0 0;
+        padding-left: 20px;
+        max-height: 260px;
+        overflow: auto;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 14px;
+        line-height: 1.25;
+      }
+      @media (max-width: 980px) {
+        main { grid-template-columns: 1fr; }
+        h1 { font-size: 30px; }
+        h2 { font-size: 21px; }
+        #mandelbrot { touch-action: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="panel">
+        <h1>Mandelbrot Mouse Explorer</h1>
+        <p>
+          Move your mouse (or finger on touch devices) over the Mandelbrot image to choose <code>c</code>.
+          The orbit follows <code>zₙ₊₁ = zₙ² + c</code>. Orbit points and
+          connecting lines are drawn on the same graph as the Mandelbrot set.
+        </p>
+        <div class="stats">
+          <p><strong>c:</strong> <span id="c-value">-</span></p>
+          <p><strong>Iterations checked:</strong> <span id="iters">-</span></p>
+          <p><strong>Escape radius:</strong> <span>2</span></p>
+          <p><strong>Result:</strong> <span id="result">Hover the plot</span></p>
+        </div>
+        <p class="orbit-meta">
+          Cyan polyline = orbit path z₀ → z₁ → …, yellow point = last shown zᵢ,
+          red/green circle = selected c.
+        </p>
+        <details>
+          <summary>Optional: show all orbit points zᵢ</summary>
+          <ol id="orbit-list"></ol>
+        </details>
+      </section>
+
+      <section class="plot-wrap">
+        <canvas id="mandelbrot" width="900" height="900" aria-label="Mandelbrot set"></canvas>
+      </section>
+    </main>
+
+    <script>
+      const canvas = document.getElementById('mandelbrot');
+      const ctx = canvas.getContext('2d');
+      const cValueEl = document.getElementById('c-value');
+      const itersEl = document.getElementById('iters');
+      const resultEl = document.getElementById('result');
+      const orbitListEl = document.getElementById('orbit-list');
+
+      const bounds = { minRe: -2.5, maxRe: 1, minIm: -1.25, maxIm: 1.25 };
+      const maxIterations = 160;
+      let baseImage = null;
+
+      function pixelToComplex(x, y) {
+        const re = bounds.minRe + (x / canvas.width) * (bounds.maxRe - bounds.minRe);
+        const im = bounds.maxIm - (y / canvas.height) * (bounds.maxIm - bounds.minIm);
+        return { re, im };
+      }
+
+      function complexToPixel(re, im) {
+        const x = ((re - bounds.minRe) / (bounds.maxRe - bounds.minRe)) * canvas.width;
+        const y = ((bounds.maxIm - im) / (bounds.maxIm - bounds.minIm)) * canvas.height;
+        return { x, y };
+      }
+
+      function iterateMandelbrot(cRe, cIm, maxIters = maxIterations) {
+        let zRe = 0;
+        let zIm = 0;
+        let escaped = false;
+        let escapeAt = maxIters;
+        const orbit = [{ n: 0, zRe: 0, zIm: 0, mag: 0 }];
+
+        for (let n = 1; n <= maxIters; n += 1) {
+          const nextRe = zRe * zRe - zIm * zIm + cRe;
+          const nextIm = 2 * zRe * zIm + cIm;
+          zRe = nextRe;
+          zIm = nextIm;
+          orbit.push({ n, zRe, zIm, mag: Math.hypot(zRe, zIm) });
+
+          if (zRe * zRe + zIm * zIm > 4) {
+            escaped = true;
+            escapeAt = n;
+            break;
+          }
+        }
+        return { escaped, escapeAt, orbit };
+      }
+
+      function palette(escapeAt) {
+        const t = escapeAt / maxIterations;
+        const green = Math.floor(238 - 35 * t);
+        const red = Math.floor(60 + 220 * Math.pow(1 - t, 1.6));
+        const blue = Math.floor(20 + 180 * Math.pow(1 - t, 2.1));
+        return [red, green, blue];
+      }
+
+      function renderMandelbrotBase() {
+        const image = ctx.createImageData(canvas.width, canvas.height);
+        const data = image.data;
+
+        for (let y = 0; y < canvas.height; y += 1) {
+          for (let x = 0; x < canvas.width; x += 1) {
+            const { re, im } = pixelToComplex(x, y);
+            const { escaped, escapeAt } = iterateMandelbrot(re, im, maxIterations);
+            const idx = (y * canvas.width + x) * 4;
+            if (!escaped) {
+              data[idx] = 0;
+              data[idx + 1] = 0;
+              data[idx + 2] = 0;
+            } else {
+              const [r, g, b] = palette(escapeAt);
+              data[idx] = r;
+              data[idx + 1] = g;
+              data[idx + 2] = b;
+            }
+            data[idx + 3] = 255;
+          }
+        }
+        return image;
+      }
+
+      function drawBase() {
+        if (!baseImage) {
+          baseImage = renderMandelbrotBase();
+        }
+        ctx.putImageData(baseImage, 0, 0);
+      }
+
+      function fmtSigned(value) {
+        return `${value >= 0 ? '+' : '-'}${Math.abs(value).toFixed(6)}`;
+      }
+
+      function updateOrbitList(orbit) {
+        orbitListEl.innerHTML = '';
+        orbit.forEach(({ n, zRe, zIm, mag }) => {
+          const li = document.createElement('li');
+          li.textContent = `z${n} = ${zRe.toFixed(6)} ${fmtSigned(zIm)}i | |z| = ${mag.toFixed(6)}`;
+          orbitListEl.appendChild(li);
+        });
+      }
+
+      function drawOrbitOverlay(orbit, escaped) {
+        ctx.save();
+
+        ctx.strokeStyle = 'rgba(100, 235, 255, 0.95)';
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        orbit.forEach(({ zRe, zIm }, i) => {
+          const { x, y } = complexToPixel(zRe, zIm);
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+
+        orbit.forEach(({ zRe, zIm }, i) => {
+          const { x, y } = complexToPixel(zRe, zIm);
+          const isLast = i === orbit.length - 1;
+          ctx.fillStyle = isLast ? '#ffd166' : 'rgba(233, 246, 255, 0.9)';
+          ctx.beginPath();
+          ctx.arc(x, y, isLast ? 3.8 : 2.1, 0, Math.PI * 2);
+          ctx.fill();
+        });
+
+        const last = orbit[orbit.length - 1];
+        const { x: lx, y: ly } = complexToPixel(last.zRe, last.zIm);
+        ctx.strokeStyle = escaped ? 'rgba(255, 127, 136, 0.95)' : 'rgba(96, 255, 145, 0.95)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(lx, ly, 8, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
+      function drawSelectedCMarker(cRe, cIm, escaped) {
+        const { x, y } = complexToPixel(cRe, cIm);
+        ctx.save();
+        ctx.strokeStyle = escaped ? '#ff7f88' : '#60ff91';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(x, y, 9, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function updateFromClientPoint(clientX, clientY) {
+        const rect = canvas.getBoundingClientRect();
+        const x = (clientX - rect.left) * (canvas.width / rect.width);
+        const y = (clientY - rect.top) * (canvas.height / rect.height);
+
+        const { re: cRe, im: cIm } = pixelToComplex(x, y);
+        const result = iterateMandelbrot(cRe, cIm, maxIterations);
+
+        cValueEl.textContent = `${cRe.toFixed(6)} ${fmtSigned(cIm)}i`;
+        itersEl.textContent = String(result.escapeAt);
+
+        if (result.escaped) {
+          resultEl.textContent = `Escapes at n = ${result.escapeAt} (not in set)`;
+          resultEl.classList.add('not-in-set');
+          resultEl.classList.remove('in-set');
+        } else {
+          resultEl.textContent = `No escape by n = ${maxIterations} (likely in set)`;
+          resultEl.classList.add('in-set');
+          resultEl.classList.remove('not-in-set');
+        }
+
+        updateOrbitList(result.orbit);
+        drawBase();
+        drawOrbitOverlay(result.orbit, result.escaped);
+        drawSelectedCMarker(cRe, cIm, result.escaped);
+      }
+
+      canvas.addEventListener('mousemove', (event) => {
+        updateFromClientPoint(event.clientX, event.clientY);
+      });
+
+      canvas.addEventListener('touchstart', (event) => {
+        if (event.touches.length > 0) {
+          event.preventDefault();
+          updateFromClientPoint(event.touches[0].clientX, event.touches[0].clientY);
+        }
+      }, { passive: false });
+
+      canvas.addEventListener('touchmove', (event) => {
+        if (event.touches.length > 0) {
+          event.preventDefault();
+          updateFromClientPoint(event.touches[0].clientX, event.touches[0].clientY);
+        }
+      }, { passive: false });
+
+      drawBase();
+    </script>
+  </body>
+</html>
